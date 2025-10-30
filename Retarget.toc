@@ -1,0 +1,7 @@
+## Interface: 11200
+## Author: Me0wg4ming
+## Title: |CFF00FF00Retarget |CFFFF0000[SuperWoW]
+## Notes: Retargets after losing target.
+
+# Addon Files
+Retarget.lua
