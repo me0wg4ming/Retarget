@@ -6,6 +6,7 @@ IMPROVEMENT: UNIT_CASTEVENT-based Feign Death detection
 - NO MORE TIMERS - instant reaction!
 - FIXED: Race condition when Hunter re-casts FD immediately after standing up
 - FIXED: Target check for FD when selecting dead Hunter
+- FIXED: Memory leak in lastDeathWasFD table
 ]]
 
 -- ===== PERFORMANCE: Cache global functions =====
@@ -60,6 +61,48 @@ local FEIGN_DEATH_SPELL_IDS = {
     [5384] = true,  -- Feign Death (Rank 1)
     [5385] = true,  -- Feign Death (Rank 2)
 }
+
+-- ===== SUPERWOW CHECK =====
+local function CheckSuperWoW()
+    local hasSuperWoW = (_G.TargetUnit ~= nil and _G.UnitExists ~= nil and _G.SpellInfo ~= nil)
+    
+    if not hasSuperWoW then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000============================================|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[Retarget] CRITICAL ERROR: SuperWoW NOT DETECTED!|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffcc00This addon REQUIRES SuperWoW to function.|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffcc00Without SuperWoW, GUID-based retargeting will not work.|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffcc00Please install SuperWoW from:|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00https://github.com/balakethelock/SuperWoW|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000Retarget addon has been DISABLED.|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000Please reload UI after installing SuperWoW.|r")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff0000============================================|r")
+        
+        -- Block slash command
+        SlashCmdList["RT"] = function()
+            DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[Retarget]|r Retarget is DISABLED - SuperWoW not detected!")
+            DEFAULT_CHAT_FRAME:AddMessage("|cffffcc00Please install SuperWoW and reload UI.|r")
+        end
+        SLASH_RT1 = "/rt"
+        
+        -- Disable all frames
+        if TargetCheck then
+            TargetCheck:Hide()
+            TargetCheck:SetScript("OnUpdate", nil)
+        end
+        
+        if GuidCollector then
+            GuidCollector:UnregisterAllEvents()
+            GuidCollector:Hide()
+            GuidCollector:SetScript("OnEvent", nil)
+        end
+        
+        return false
+    end
+    
+    return true
+end
 
 -- ===== UTILITIES =====
 local function Debug(msg)
@@ -218,8 +261,9 @@ local function CleanupOldGUIDs()
     local currentTime = GetTime()
     local removed = 0
     
+    -- Cleanup GUIDs that no longer exist (unit is gone)
     for guid, data in pairs(GUIDCache) do
-        if (currentTime - data.time) > 300 and not UnitExists(guid) then
+        if not UnitExists(guid) then
             GUIDCache[guid] = nil
             removed = removed + 1
         end
@@ -236,6 +280,13 @@ local function CleanupOldGUIDs()
     for guid, standUpTime in pairs(feignDeathStandUpTime) do
         if (currentTime - standUpTime) > FEIGN_DEATH_CLEANUP_WINDOW then
             feignDeathStandUpTime[guid] = nil
+        end
+    end
+    
+    -- MEMORY LEAK FIX: Cleanup old lastDeathWasFD entries
+    for guid, _ in pairs(lastDeathWasFD) do
+        if not GUIDCache[guid] then
+            lastDeathWasFD[guid] = nil
         end
     end
     
@@ -475,8 +526,8 @@ GuidCollector:SetScript("OnEvent", function()
             local isOurTarget = (trackedGUID and casterGUID == trackedGUID)
             local guidMatch = trackedGUID and strformat("tracked=%s, caster=%s", trackedGUID, casterGUID) or "no tracking"
             
-            DEFAULT_CHAT_FRAME:AddMessage(strformat("|cffff00ff[FD CAST EVENT]|r %s | Type:%s | Match:%s | %s", 
-                casterName, eventType, tostring(isOurTarget), guidMatch))
+            --DEFAULT_CHAT_FRAME:AddMessage(strformat("|cffff00ff[FD CAST EVENT]|r %s | Type:%s | Match:%s | %s", 
+                --casterName, eventType, tostring(isOurTarget), guidMatch))
         end
         
         -- Debug: Log ALL cast events in debug mode
@@ -591,10 +642,11 @@ SlashCmdList["RT"] = function(msg)
 end
 SLASH_RT1 = "/rt"
 
--- ===== INITIALIZATION MESSAGE =====
-DEFAULT_CHAT_FRAME:AddMessage("|cff9966ff[Retarget]|r Loaded. SuperWoW GUID integration active.")
-DEFAULT_CHAT_FRAME:AddMessage("|cff9966ff[Retarget]|r ✅ Hunter Feign Death tracking only")
-DEFAULT_CHAT_FRAME:AddMessage("|cff9966ff[Retarget]|r ✅ INSTANT detection via UNIT_CASTEVENT")
-DEFAULT_CHAT_FRAME:AddMessage("|cff9966ff[Retarget]|r ✅ Race condition fix (0.5s recast buffer)")
-DEFAULT_CHAT_FRAME:AddMessage("|cff9966ff[Retarget]|r ✅ FD buff scan on target selection")
-DEFAULT_CHAT_FRAME:AddMessage("|cff9966ff[Retarget]|r Use /rt status to check system.")
+-- ===== INITIALIZATION =====
+if CheckSuperWoW() then
+    DEFAULT_CHAT_FRAME:AddMessage("|cff9966ff[Retarget]|r Loaded. SuperWoW GUID integration active.")
+    DEFAULT_CHAT_FRAME:AddMessage("|cff9966ff[Retarget]|r Use /rt status to check system.")
+else
+    -- Addon disabled due to missing SuperWoW
+    -- Error message already shown in CheckSuperWoW()
+end
