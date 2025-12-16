@@ -164,9 +164,25 @@ local function AddUnit(unit)
         local class = UnitClass(guid)
         if not class then return end
         
+        local _, classToken = UnitClass(guid)
+        
+        -- ✅ NUR HUNTER
+        if classToken ~= "HUNTER" then
+            return
+        end
+        
+        -- ✅ NUR angreifbare Hunters
+        if not UnitCanAttack("player", guid) then
+            return
+        end
+        
+        -- ✅ NUR PvP-flagged Hunters
+        if not UnitIsPVP(guid) then
+            return
+        end
+        
         local isNew = GUIDCache[guid] == nil
         local name = UnitName(guid)
-        local _, classToken = UnitClass(guid)
         
         if name then
             GUIDCache[guid] = {
@@ -179,7 +195,7 @@ local function AddUnit(unit)
             
             if isNew then
                 Stats.guidsCollected = Stats.guidsCollected + 1
-                Debug(strformat("GUID collected: %s (%s)", name, classToken or "?"))
+                Debug(strformat("GUID collected: %s (HUNTER, PvP)", name))
             end
         end
     end
@@ -390,11 +406,22 @@ local function OnUpdateFrame(self, elapsed)
                         trackedName = nil
                     end
                 else
-                    -- NO: Real death → INSTANT stop tracking
-                    Stats.realDeathsDetected = Stats.realDeathsDetected + 1
-                    Debug("|cffff0000❌ No FD cast → REAL DEATH, stop tracking|r")
-                    trackedGUID = nil
-                    trackedName = nil
+                    -- NO FD cast detected AND no lastDeathWasFD
+                    -- This could be: Real death OR manual target clear
+                    
+                    -- ✅ Check if Hunter still exists and is alive
+                    if UnitExists(trackedGUID) and not UnitIsDead(trackedGUID) then
+                        -- Hunter is alive → manual target clear
+                        Debug("|cffffcc00Target manually cleared, stopping tracking|r")
+                        trackedGUID = nil
+                        trackedName = nil
+                    else
+                        -- Hunter is dead or doesn't exist → real death
+                        Stats.realDeathsDetected = Stats.realDeathsDetected + 1
+                        Debug("|cffff0000❌ No FD cast → REAL DEATH, stop tracking|r")
+                        trackedGUID = nil
+                        trackedName = nil
+                    end
                 end
             end
         end
@@ -440,13 +467,28 @@ local function OnUpdateFrame(self, elapsed)
         
         -- Only track Hunters now!
         if classToken == "HUNTER" then
+            -- ✅ Check: Angreifbar?
+            if not UnitCanAttack("player", "target") then
+                trackedGUID = nil
+                trackedName = nil
+                return
+            end
+            
+            -- ✅ Check: PvP-flagged?
+            if not UnitIsPVP("target") then
+                Debug("Hunter not PvP-flagged, skipping tracking")
+                trackedGUID = nil
+                trackedName = nil
+                return
+            end
+            
             local isDead = UnitIsDead("target")
             
             if not isDead then
                 -- Hunter is alive → start normal tracking
                 trackedGUID = targetGUID
                 trackedName = UnitName("target")
-                Debug(strformat("Tracking started: %s (HUNTER)", trackedName))
+                Debug(strformat("Tracking started: %s (HUNTER, PvP)", trackedName))
             else
                 -- Hunter is dead → check if it's FD via buff scan
                 -- ✅ Einmaliger Check beim Targeting eines toten Hunters
@@ -514,10 +556,7 @@ end
 
 -- ===== EVENT HANDLER =====
 GuidCollector:RegisterEvent("PLAYER_TARGET_CHANGED")
-GuidCollector:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
 GuidCollector:RegisterEvent("PLAYER_ENTERING_WORLD")
-GuidCollector:RegisterEvent("UNIT_COMBAT")
-GuidCollector:RegisterEvent("UNIT_AURA")
 GuidCollector:RegisterEvent("UNIT_CASTEVENT")
 
 GuidCollector:SetScript("OnEvent", function()
@@ -525,67 +564,28 @@ GuidCollector:SetScript("OnEvent", function()
         if UnitExists("target") then
             AddUnit("target")
         end
-        if UnitExists("targettarget") then
-            AddUnit("targettarget")
-        end
-    elseif event == "UPDATE_MOUSEOVER_UNIT" then
-        if UnitExists("mouseover") then
-            AddUnit("mouseover")
-        end
     elseif event == "PLAYER_ENTERING_WORLD" then
         Debug("Addon loaded. GUID system active.")
         AddUnit("player")
     elseif event == "UNIT_CASTEVENT" then
-        -- INSTANT Detection via UNIT_CASTEVENT
         local casterGUID, targetGUID, eventType, spellID, castDuration = arg1, arg2, arg3, arg4, arg5
         
-        -- ✅ Debug: ALWAYS log Feign Death casts (even in non-debug mode)
-        if FEIGN_DEATH_SPELL_IDS[spellID] then
-            local casterName = UnitName(casterGUID) or "Unknown"
-            local isOurTarget = (trackedGUID and casterGUID == trackedGUID)
-            local guidMatch = trackedGUID and strformat("tracked=%s, caster=%s", trackedGUID, casterGUID) or "no tracking"
-            
-            --DEFAULT_CHAT_FRAME:AddMessage(strformat("|cffff00ff[FD CAST EVENT]|r %s | Type:%s | Match:%s | %s", 
-                --casterName, eventType, tostring(isOurTarget), guidMatch))
+        -- ✅ WHITELIST: Nur Feign Death interessiert uns!
+        if not FEIGN_DEATH_SPELL_IDS[spellID] then
+            return
         end
         
-        -- Debug: Log ALL cast events in debug mode
-        if debugMode and eventType and spellID then
-            local casterName = UnitName(casterGUID) or "Unknown"
-            local spellName = "Unknown"
-            if SpellInfo then
-                local name, rank = SpellInfo(spellID)
-                spellName = name or "Unknown"
-            end
-            
-            -- Mark if this is our tracked target
-            local isTracked = (trackedGUID and casterGUID == trackedGUID)
-            local marker = isTracked and " |cff00ff00[TRACKED]|r" or ""
-            
-            Debug(strformat("CAST EVENT: %s cast %s (ID:%d, Type:%s)%s", casterName, spellName, spellID, eventType, marker))
-        end
-        
+        -- ✅ Nur CAST/CHANNEL von Feign Death
         if eventType ~= "CAST" and eventType ~= "CHANNEL" then
             return
         end
         
-        -- ✅ IMPORTANT: Only track Feign Death from our tracked Hunter!
-        if FEIGN_DEATH_SPELL_IDS[spellID] then
-            -- Check if this is from our tracked target
-            if trackedGUID and casterGUID == trackedGUID then
-                MarkFeignDeathCast(casterGUID)
-            else
-                -- Different hunter - ignore
-                if debugMode then
-                    local name = UnitName(casterGUID) or "Unknown"
-                    Debug(strformat("|cffaaaaaa[IGNORED]|r %s cast FD (not tracked)", name))
-                end
-            end
-        end
-    else
-        local unit = arg1
-        if unit and UnitExists(unit) and UnitIsPlayer(unit) then
-            AddUnit(unit)
+        -- ✅ Nur von unserem tracked Hunter
+        if trackedGUID and casterGUID == trackedGUID then
+            MarkFeignDeathCast(casterGUID)
+        elseif debugMode then
+            local name = UnitName(casterGUID) or "Unknown"
+            Debug(strformat("|cffaaaaaa[IGNORED]|r %s cast FD (not tracked)", name))
         end
     end
 end)
