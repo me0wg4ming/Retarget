@@ -310,34 +310,42 @@ local function OnUpdateFrame(self, elapsed)
         if trackedGUID then
             -- INSTANT CHECK: Was FD casted?
             if HasFeignDeathCast(trackedGUID) then
-                -- YES: Feign Death → INSTANT re-target
                 Debug("✅ FD Cast detected → INSTANT re-target!")
-                
-                -- Mark this death as FD
                 lastDeathWasFD[trackedGUID] = true
                 
                 if TryReTarget() then
-                    -- Verify it's really FD by checking buff
+                    -- ✅ WICHTIG: Jetzt UnitIsDead checken
                     local isDead = UnitIsDead("target")
-                    local hasFD = HasFeignDeath("target")
                     
-                    Debug(strformat("Re-Target Check: isDead=%s, hasFD=%s", tostring(isDead), tostring(hasFD)))
-                    
-                    if isDead and hasFD then
-                        Debug("FD confirmed, keeping target")
+                    if isDead then
+                        -- ✅ Ziel ist "tot" → JETZT Buff-Scan!
+                        local hasFD = HasFeignDeath("target")
+                        
+                        Debug(strformat("Re-Target Check: isDead=true, hasFD=%s", tostring(hasFD)))
+                        
+                        if hasFD then
+                            Debug("FD buff confirmed, keeping target")
+                        else
+                            -- Tot aber kein FD Buff = wirklich tot!
+                            Debug("|cffff0000No FD buff → REALLY DEAD!|r")
+                            Stats.realDeathsDetected = Stats.realDeathsDetected + 1
+                            ClearFeignDeathCast(trackedGUID)
+                            lastDeathWasFD[trackedGUID] = nil
+                            trackedGUID = nil
+                            trackedName = nil
+                            TargetUnit("player")
+                            ClearTarget()
+                        end
                     else
-                        -- FD ended or wasn't real FD
-                        Debug(strformat("|cffffcc00WARNING:|r No FD buff found! isDead=%s, hasFD=%s", tostring(isDead), tostring(hasFD)))
+                        -- Nicht tot = FD wurde bereits beendet
+                        Debug("Hunter stood up during retarget, clearing FD flag")
                         ClearFeignDeathCast(trackedGUID)
                         lastDeathWasFD[trackedGUID] = nil
-                        trackedGUID = nil
-                        trackedName = nil
-                        TargetUnit("player")
-                        ClearTarget()
                     end
                 else
                     -- Re-target failed
                     Debug("Re-target failed, clearing tracking")
+                    Stats.realDeathsDetected = Stats.realDeathsDetected + 1
                     ClearFeignDeathCast(trackedGUID)
                     lastDeathWasFD[trackedGUID] = nil
                     trackedGUID = nil
@@ -348,26 +356,31 @@ local function OnUpdateFrame(self, elapsed)
                 -- BUT: Check if last death was FD (edge case: stood up quickly then died again)
                 if lastDeathWasFD[trackedGUID] then
                     Debug("|cffffcc00EDGE CASE:|r No FD cast flag, but lastDeathWasFD=true")
-                    Debug(strformat("  trackedGUID: %s", trackedGUID or "nil"))
-                    Debug(strformat("  trackedName: %s", trackedName or "nil"))
-                    Debug("  Reason: FD flag was cleared but death occurred shortly after")
                     Debug("  Trying re-target anyway to verify...")
                     
                     if TryReTarget() then
                         local isDead = UnitIsDead("target")
-                        local hasFD = HasFeignDeath("target")
                         
-                        if isDead and hasFD then
-                            Debug("FD confirmed (via edge case), keeping target")
+                        if isDead then
+                            -- ✅ Tot → Buff-Scan!
+                            local hasFD = HasFeignDeath("target")
+                            
+                            if hasFD then
+                                Debug("FD confirmed (via edge case), keeping target")
+                            else
+                                -- Tot ohne Buff = wirklich tot
+                                Stats.realDeathsDetected = Stats.realDeathsDetected + 1
+                                Debug("|cffff0000❌ Really dead this time!|r")
+                                lastDeathWasFD[trackedGUID] = nil
+                                trackedGUID = nil
+                                trackedName = nil
+                                TargetUnit("player")
+                                ClearTarget()
+                            end
                         else
-                            -- Really dead this time
-                            Stats.realDeathsDetected = Stats.realDeathsDetected + 1
-                            Debug("|cffff0000❌ Really dead this time!|r")
+                            -- Nicht tot = aufgestanden
+                            Debug("Hunter alive during edge case retarget")
                             lastDeathWasFD[trackedGUID] = nil
-                            trackedGUID = nil
-                            trackedName = nil
-                            TargetUnit("player")
-                            ClearTarget()
                         end
                     else
                         Stats.realDeathsDetected = Stats.realDeathsDetected + 1
@@ -375,8 +388,6 @@ local function OnUpdateFrame(self, elapsed)
                         lastDeathWasFD[trackedGUID] = nil
                         trackedGUID = nil
                         trackedName = nil
-                        TargetUnit("player")
-                        ClearTarget()
                     end
                 else
                     -- NO: Real death → INSTANT stop tracking
@@ -438,13 +449,15 @@ local function OnUpdateFrame(self, elapsed)
                 Debug(strformat("Tracking started: %s (HUNTER)", trackedName))
             else
                 -- Hunter is dead → check if it's FD via buff scan
+                -- ✅ Einmaliger Check beim Targeting eines toten Hunters
                 local hasFD = HasFeignDeath("target")
                 
                 if hasFD then
                     -- Dead + FD Buff = Feign Death → start tracking!
                     trackedGUID = targetGUID
                     trackedName = UnitName("target")
-                    Debug(strformat("Tracking started: %s (HUNTER in FD)", trackedName))
+                    MarkFeignDeathCast(trackedGUID)  -- Markiere als FD
+                    Debug(strformat("Tracking started: %s (HUNTER in FD - buff detected)", trackedName))
                 else
                     -- Dead without FD buff = really dead
                     Debug("Target is dead (no FD buff), not starting tracking")
@@ -459,6 +472,24 @@ local function OnUpdateFrame(self, elapsed)
     else
         -- Same target as tracked (must be Hunter)
         local isDead = UnitIsDead("target")
+        
+        -- ✅ Periodischer Check: Wenn Hunter tot ist UND FD Flag gesetzt
+        if isDead and HasFeignDeathCast(trackedGUID) then
+            local hasFD = HasFeignDeath("target")
+            
+            if not hasFD then
+                -- FD Buff verloren während tot = wirklich gestorben!
+                Debug("|cffff0000Lost FD buff while dead → REALLY DEAD!|r")
+                Stats.realDeathsDetected = Stats.realDeathsDetected + 1
+                ClearFeignDeathCast(trackedGUID)
+                lastDeathWasFD[trackedGUID] = nil
+                trackedGUID = nil
+                trackedName = nil
+                TargetUnit("player")
+                ClearTarget()
+                return  -- Wichtig: Hier raus!
+            end
+        end
         
         -- Hunter stood up?
         if not isDead and HasFeignDeathCast(trackedGUID) then
@@ -477,18 +508,6 @@ local function OnUpdateFrame(self, elapsed)
                 ClearFeignDeathCast(trackedGUID)
                 lastDeathWasFD[trackedGUID] = nil
             end
-        end
-        
-        -- Lost FD buff while dead = really dead
-        if isDead and HasFeignDeathCast(trackedGUID) and not HasFeignDeath("target") then
-            Debug("Lost FD buff while dead → really dead!")
-            Stats.realDeathsDetected = Stats.realDeathsDetected + 1
-            ClearFeignDeathCast(trackedGUID)
-            lastDeathWasFD[trackedGUID] = nil
-            trackedGUID = nil
-            trackedName = nil
-            TargetUnit("player")
-            ClearTarget()
         end
     end
 end
