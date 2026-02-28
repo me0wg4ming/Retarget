@@ -93,12 +93,7 @@ local function TryReTarget()
 end
 
 -- ===== CLEANUP =====
-local cleanupTimer = 0
-local cleanupFrame = CreateFrame("Frame")
-cleanupFrame:SetScript("OnUpdate", function()
-  cleanupTimer = cleanupTimer + (arg1 or 0.01)
-  if cleanupTimer < 30 then return end
-  cleanupTimer = 0
+local function Cleanup()
   local now = GetTime()
   for guid in pairs(GUIDCache) do
     if not UnitExists(guid) then GUIDCache[guid] = nil end
@@ -108,7 +103,7 @@ cleanupFrame:SetScript("OnUpdate", function()
       feignDeathCastDetected[guid] = nil
     end
   end
-end)
+end
 
 -- ===== EVENTS =====
 GuidCollector:RegisterEvent("PLAYER_TARGET_CHANGED")
@@ -119,6 +114,7 @@ GuidCollector:RegisterEvent("UNIT_DIED")
 GuidCollector:SetScript("OnEvent", function()
 
   if event == "PLAYER_TARGET_CHANGED" then
+    Cleanup()
     if UnitExists("target") then
       AddUnit("target")
       local _, guid = UnitExists("target")
@@ -137,6 +133,9 @@ GuidCollector:SetScript("OnEvent", function()
             trackedName = UnitName("target")
             Debug(strformat("Tracking: %s", trackedName))
           end
+        elseif trackedGUID and not UnitIsPlayer(guid) and UnitPlayerControlled(guid) then
+          -- Pet targeted while tracking a Hunter - ignore, keep tracking
+          Debug("Pet targeted, ignoring - keeping Hunter tracking")
         else
           if trackedGUID then feignDeathCastDetected[trackedGUID] = nil end
           trackedGUID = nil
@@ -176,6 +175,7 @@ GuidCollector:SetScript("OnEvent", function()
   -- UNIT_DIED fires on real death, NOT on Feign Death
   elseif event == "UNIT_DIED" then
     local guid = arg1
+    Cleanup()
     if guid ~= trackedGUID then return end
     Debug("|cffff0000UNIT_DIED → REAL DEATH, stop tracking|r")
     Stats.realDeathsDetected = Stats.realDeathsDetected + 1
