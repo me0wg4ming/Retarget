@@ -1,6 +1,6 @@
 ## Interface: 11200
 ## Author: Me0wg4ming
-## Title: |CFF00FF00Retarget |CFFFF0000[SuperWoW]
+## Title: |CFF00FF00Retarget |CFFFF0000[Nampower]
 ## Notes: Retargets after losing target.
 
 # Addon Files
